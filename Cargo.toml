@@ -1,0 +1,11 @@
+[package]
+name = "rust_mobile"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit = { version = "0.30.5", features = ["android-native-activity"] }
+
+[lib]
+crate-type = ["cdylib"]
+
