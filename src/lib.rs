@@ -1,100 +1,164 @@
-use winit::window::WindowAttributes;
-use winit::event::Event;
+use winit::application::ApplicationHandler;
+use winit::window::{
+	Window,
+	WindowId,
+};
+use winit::event_loop::{
+	ActiveEventLoop,
+	ControlFlow,
+	EventLoop,
+};
 use winit::event::WindowEvent;
-use egl;
-use std::ffi::*;
-use glow;
-use glow::HasContext;
+
+use egl::{
+	EGLDisplay,
+	EGLSurface,
+	EGLConfig,
+	EGLContext,
+};
+use gl;
 
 #[cfg(target_os = "android")]
 pub use winit::platform::android::activity::AndroidApp;
+use winit::platform::android::EventLoopBuilderExtAndroid;
 
-#[cfg(target_os = "android")]
-pub fn build_android(app: AndroidApp) {
-	use winit::platform::android::EventLoopBuilderExtAndroid;
-	use winit::event_loop::EventLoopBuilder;
+#[derive(Default)]
+struct App {
+	pub android_app: Option<AndroidApp>,
+	window: Option<Window>,
+	egl_display: Option<EGLDisplay>,
+	egl_surface: Option<EGLSurface>,
+	egl_config: Option<EGLConfig>,
+	egl_context: Option<EGLContext>,
+}
 
-	let event_loop = EventLoopBuilder::new()
-		.with_android_app(app.clone())
-		.build()
-		.expect("No event");
+impl ApplicationHandler for App {
+	fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+		// Creating window
+		self.window = Some(event_loop
+			.create_window(Window::default_attributes())
+			.expect("Failed to create window"));
+		println!("Created window");
 
-	let window = event_loop
-		.create_window(WindowAttributes::new())
-		.expect("No window");
+		// Creating EGLDisplay
+		self.egl_display = Some(
+			egl::get_display(egl::EGL_DEFAULT_DISPLAY)
+				.expect("Failed to create EGLDisplay")
+		);
+		println!("Created EGLDisplay");
 
-	// Initialize EGL
-	let egl_display = egl::get_display(egl::EGL_DEFAULT_DISPLAY).unwrap();
-	let mut major: i32 = 0;
-	let mut minor: i32 = 0;
-	if !egl::initialize(egl_display, &mut major, &mut minor) {
-		panic!("Failed to initialize egl");
+		// Initializing EGL
+		let mut major: i32 = 0;
+		let mut minor: i32 = 0;
+		if !egl::initialize(self.egl_display.unwrap(), &mut major, &mut minor) {
+			panic!("Failed to initialize egl");
+		}
+		println!("Initialized EGL: {major}.{minor}");
+
+		// Choose an appropriate EGL configuration
+		let config_attributes = [
+				egl::EGL_SURFACE_TYPE as i32, egl::EGL_WINDOW_BIT as i32,
+				egl::EGL_BLUE_SIZE as i32, 8,
+				egl::EGL_GREEN_SIZE as i32, 8,
+				egl::EGL_RED_SIZE as i32, 8,
+				egl::EGL_DEPTH_SIZE as i32, 24,
+				egl::EGL_NONE as i32
+		];
+		self.egl_config = Some(
+			egl::choose_config(
+				self.egl_display.unwrap(),
+				&config_attributes, config_attributes.len() as i32
+			).expect("Failed to setup EGLConfig")
+		);
+		println!("Created EGLConfig");
+
+		// Creating EGL context
+		let context_attribs = [
+			egl::EGL_CONTEXT_CLIENT_VERSION, 2,  // Request OpenGL ES 2.0
+			egl::EGL_NONE,
+		];
+		self.egl_context = Some(
+			egl::create_context(
+				self.egl_display.unwrap(),
+				self.egl_config.unwrap(),
+				std::ptr::null_mut(),
+				&context_attribs
+			).expect("Failed to create EGLContext")
+		);
+		println!("Created EGLContext");
+
+		// Creating EGLSurface
+		let native_window = self.android_app
+			.as_ref()
+			.unwrap()
+			.native_window()
+			.expect("Failed to get NativeWindow");
+
+		self.egl_surface = Some(
+			egl::create_window_surface(
+				self.egl_display.unwrap(),
+				self.egl_config.unwrap(),
+				native_window.ptr().as_ptr() as *mut _, &[]
+			).expect("Failed to create EGLSurface")
+		);
+		println!("Created EGLSurface");
+
+		// Establishing Opengl context
+		if !egl::make_current(
+			self.egl_display.unwrap(),
+			self.egl_surface.unwrap(),
+			self.egl_surface.unwrap(),
+			self.egl_context.unwrap()
+		) {
+			panic!("Failed to make context");
+		}
+		println!("Sucessfully established Opengl context");
+
+		// Loaindg opengl functions
+		gl::load_with(|name| egl::get_proc_address(name) as *const _);
+		println!("Loaded Opengl functions");
 	}
 
-	// Choose an appropriate EGL configuration
-	let config_attributes = [
-			egl::EGL_SURFACE_TYPE as i32, egl::EGL_WINDOW_BIT as i32,
-			egl::EGL_BLUE_SIZE as i32, 8,
-			egl::EGL_GREEN_SIZE as i32, 8,
-			egl::EGL_RED_SIZE as i32, 8,
-			egl::EGL_DEPTH_SIZE as i32, 24,
-			egl::EGL_NONE as i32
-	];
-	let egl_config = egl::choose_config(egl_display, &config_attributes, 10).unwrap();
-
-	// Create the EGL context
-	let context_attribs = [
-		egl::EGL_CONTEXT_CLIENT_VERSION, 2,  // Request OpenGL ES 2.0
-		egl::EGL_NONE,
-	];
-	let egl_context = egl::create_context(egl_display, egl_config, std::ptr::null_mut(), &context_attribs).expect("No context?");
-
-	let mut glow_gl: Option<glow::Context> = None;
-	let mut egl_surface: *mut c_void = std::ptr::null_mut() as *mut _;
-
-	// Use loop the proper way
-	event_loop.run(move |event: Event<()>, _| {
+	fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
 		match event {
-			Event::WindowEvent { event, window_id } => match event {
-				WindowEvent::Resized(_) => {
-					// Ensure the native window is accessible
-					if let Some(native_window) = app.native_window() {
-						let native_window = app.native_window().expect("No native window?");
-						egl_surface = egl::create_window_surface(egl_display, egl_config, native_window.ptr().as_ptr() as *mut _, &[]).unwrap();
-
-						// Make the EGL context current
-						if !egl::make_current(egl_display, egl_surface, egl_surface, egl_context) {
-							panic!("Failed to make context");
-						}
-
-						unsafe {
-							//gl::load_with(|name| egl::get_proc_address(name) as *const _);
-							glow_gl = Some(glow::Context::from_loader_function(|s| egl::get_proc_address(s) as *mut _));
-						}
-					}
-				}
-				WindowEvent::RedrawRequested => {
-					unsafe {
-						if let Some(gl) = &glow_gl {
-							gl.clear_color(0.0, 0.0, 1.0, 1.0); // RGBA values for blue
-							// Clear the color buffer
-							gl.clear(gl::COLOR_BUFFER_BIT);
-							// Swap buffers to display the cleared color
-							if !egl::swap_buffers(egl_display, egl_surface) {
-								panic!("Failed to swap buffers");
-							}
-						}
-					}
-				}
-				_ => (),
+			WindowEvent::CloseRequested => {
+				event_loop.exit();
 			},
+			WindowEvent::RedrawRequested => {
+				unsafe {
+					gl::ClearColor(0.2, 0.2, 0.2, 1.0);
+					gl::Clear(gl::COLOR_BUFFER_BIT);
+
+					if !egl::swap_buffers(
+						self.egl_display.unwrap(),
+						self.egl_surface.unwrap()
+					) {
+						panic!("Failed to swap buffers");
+					}
+				}
+				// Use this to call draw request for every frame
+				//self.window.as_ref().unwrap().request_redraw();
+			}
 			_ => (),
 		}
-	});
+	}
 }
 
 #[cfg(target_os = "android")]
 #[no_mangle]
 fn android_main(app: AndroidApp) {
-		build_android(app);
+
+	// Creating eventloop for android
+	let event_loop = EventLoop::builder()
+		.with_android_app(app.clone())
+		.build()
+		.expect("Failed to create eventloop");
+	event_loop.set_control_flow(ControlFlow::Poll);
+
+	// Creating our app
+	let mut t_app = App::default();
+	t_app.android_app = Some(app);
+
+	// Running the app
+	event_loop.run_app(&mut t_app).unwrap();
 }

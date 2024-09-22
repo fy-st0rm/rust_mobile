@@ -7,8 +7,6 @@ edition = "2021"
 winit = { version = "0.30.5", features = ["android-native-activity"] }
 egl = "0.2.7"
 gl = "0.14.0"
-gles30 = "0.5.2"
-glow = "0.14.1"
 
 [lib]
 crate-type = ["cdylib"]
