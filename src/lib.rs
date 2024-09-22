@@ -1,3 +1,8 @@
+mod math;
+mod utils;
+mod shader;
+mod renderer;
+
 use winit::application::ApplicationHandler;
 use winit::window::{
 	Window,
@@ -18,8 +23,13 @@ use egl::{
 };
 use gl;
 
+use renderer::Renderer;
+use math::vec::*;
+
 #[cfg(target_os = "android")]
 pub use winit::platform::android::activity::AndroidApp;
+
+#[cfg(target_os = "android")]
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
 #[derive(Default)]
@@ -30,6 +40,7 @@ struct App {
 	egl_surface: Option<EGLSurface>,
 	egl_config: Option<EGLConfig>,
 	egl_context: Option<EGLContext>,
+	renderer: Option<Renderer>,
 }
 
 impl ApplicationHandler for App {
@@ -117,6 +128,11 @@ impl ApplicationHandler for App {
 		// Loaindg opengl functions
 		gl::load_with(|name| egl::get_proc_address(name) as *const _);
 		println!("Loaded Opengl functions");
+
+		self.renderer = Some(
+			Renderer::new().expect("Failed to create renderer")
+		);
+		println!("Created renderer.");
 	}
 
 	fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -125,16 +141,25 @@ impl ApplicationHandler for App {
 				event_loop.exit();
 			},
 			WindowEvent::RedrawRequested => {
-				unsafe {
-					gl::ClearColor(0.2, 0.2, 0.2, 1.0);
-					gl::Clear(gl::COLOR_BUFFER_BIT);
 
-					if !egl::swap_buffers(
-						self.egl_display.unwrap(),
-						self.egl_surface.unwrap()
-					) {
-						panic!("Failed to swap buffers");
-					}
+				if let Some(renderer) = self.renderer.as_mut() {
+					renderer.clear(0.5, 0.5, 0.5, 1.0);
+					renderer.begin();
+
+					renderer.push_quad(
+						Vec3::new(-0.5, -0.5, 0.0),
+						Vec2::new(1.0, 1.0),
+						Vec4::new(1.0, 0.0, 0.0, 1.0)
+					);
+
+					renderer.end();
+				}
+
+				if !egl::swap_buffers(
+					self.egl_display.unwrap(),
+					self.egl_surface.unwrap()
+				) {
+					panic!("Failed to swap buffers");
 				}
 				// Use this to call draw request for every frame
 				//self.window.as_ref().unwrap().request_redraw();
